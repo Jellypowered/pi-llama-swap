@@ -1,24 +1,25 @@
-# pi-llama
+# pi-llama-swap
 
-llama.cpp / llama-swap Pi extension. Auto-discovers models from a running
-`llama-server` or `llama-swap` and registers them as a configurable provider
-in pi.
+llama-swap Pi extension — inspired by [huggingface/pi-llama](https://github.com/huggingface/pi-llama).
+
+Auto-discovers models from a running llama-swap and registers them as the
+`llama-swap` provider in pi.
 
 ## Install
 
 **From the shell:**
 
 ```bash
-pi install https://github.com/huggingface/pi-llama
+pi install https://github.com/Jellypowered/pi-llama-swap
 ```
 
-This clones to `~/.pi/agent/packages/pi-llama/` and adds an entry to your pi
+This clones to `~/.pi/agent/packages/pi-llama-swap/` and adds an entry to your pi
 settings. Every future `pi` invocation auto-loads it.
 
 **From inside an interactive pi session:**
 
 ```
-!pi install https://github.com/huggingface/pi-llama
+!pi install https://github.com/Jellypowered/pi-llama-swap
 ```
 
 Then run `/reload` (or restart pi) to load the extension.
@@ -26,8 +27,8 @@ Then run `/reload` (or restart pi) to load the extension.
 **Dev mode:**
 
 ```bash
-git clone https://github.com/huggingface/pi-llama ~/code/pi-llama
-pi -e ~/code/pi-llama/index.ts
+git clone https://github.com/Jellypowered/pi-llama-swap ~/code/pi-llama-swap
+pi -e ~/code/pi-llama-swap/index.ts
 ```
 
 `-e` loads the extension only for the current session, useful while
@@ -35,15 +36,14 @@ developing.
 
 ## Configuration
 
-Create `~/.pi/agent/pi-llama.json` for global config or
-`./.pi/pi-llama.json` for project-local overrides. Both are JSON files; the
+Create `~/.pi/agent/pi-llama-swap.json` for global config or
+`./.pi/pi-llama-swap.json` for project-local overrides. Both are JSON files; the
 project-local file takes precedence.
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `baseUrl` | `http://localhost:8080/v1` | API base URL (no trailing slash) |
-| `providerId` | `llama-cpp` | Provider ID for model registration |
-| `llamaSwapMode` | `false` | Use `/upstream/:id/props` instead of `/props?model=:id` |
+| `providerId` | `llama-swap` | Provider ID for model registration |
 | `defaultContextWindow` | `8192` | Fallback context window when `/v1/models` omits `n_ctx` |
 | `propsTimeoutMs` | `120000` | Timeout for props discovery (ms) — increase for large models on slow networks. |
 | `logPropsDiscovery` | `false` | Log verbose /props discovery progress (start, elapsed time, errors) to the notification area. |
@@ -60,45 +60,24 @@ the notification area. This is off by default to keep the notification area
 clean. When enabled you'll see messages like:
 
 ```
-[llama-cpp] fetching /props for qwen3.6-35b-a3b-mtp…
-[llama-cpp] contextWindow=262144 for qwen3.6-35b-a3b-mtp (33ms to resolve /props)
+[llama-swap] fetching /props for qwen3.6-35b-a3b-mtp…
+[llama-swap] contextWindow=262144 for qwen3.6-35b-a3b-mtp (33ms to resolve /props)
 ```
 
 This is useful for debugging slow or failing model metadata discovery.
 
-### llama-swap
-
-To use with [llama-swap](https://github.com/refvm/llama-swap), set
-`llamaSwapMode: true`. llama-swap does not expose a root `/props` endpoint;
-instead it routes model details through
-`/upstream/:modelid/props`.
-
-Example `~/.pi/agent/pi-llama.json` for llama-swap:
-
-```json
-{
-  "baseUrl": "http://localhost:8080/v1",
-  "providerId": "llama-cpp",
-  "llamaSwapMode": true,
-  "defaultContextWindow": 8192
-}
-```
-
 ## Usage
 
 ```bash
-# 1. Install and start llama-server
-llama-server
-
-# 2. Or start llama-swap
+# 1. Start llama-swap
 llama-swap
 
-# 3. Configure ~/.pi/agent/pi-llama.json as needed
+# 2. Configure ~/.pi/agent/pi-llama-swap.json as needed
 
-# 4. Launch pi
+# 3. Launch pi
 pi
 
-# 5. Inside pi
+# 4. Inside pi
 /model              # pick models from your provider
 ```
 

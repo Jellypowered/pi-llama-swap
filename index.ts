@@ -1,29 +1,27 @@
 /**
- * llama.cpp provider for pi.
+ * llama-swap provider for pi.
  *
- * Auto-discovers models from a running `llama-server` or `llama-swap` and
- * registers them under the `llama-cpp` provider.
+ * Inspired by [huggingface/pi-llama](https://github.com/huggingface/pi-llama).
+ *
+ * Auto-discovers models from a running llama-swap and registers them
+ * under the `llama-swap` provider.
  *
  * Config file (merged, project takes precedence):
- * - `~/.pi/agent/pi-llama.json` (global)
- * - `./.pi/pi-llama.json` (project-local)
+ * - `~/.pi/agent/pi-llama-swap.json` (global)
+ * - `./.pi/pi-llama-swap.json` (project-local)
  *
- * Example pi-llama.json:
+ * Example pi-llama-swap.json:
  * ```json
  * {
  *   "baseUrl": "http://localhost:8080/v1",
  *   "providerId": "llama-swap",
- *   "llamaSwapMode": true,
  *   "defaultContextWindow": 8192,
  *   "propsTimeoutMs": 120000,
  *   "apiKey": "no-key"
  * }
  * ```
  *
- * `llamaSwapMode: true` tells the extension to use
- * `/upstream/:modelid/props` instead of `/props?model=:id`.
- *
- * Usage: `pi install github.com/huggingface/pi-llama`
+ * Usage: `pi install github.com/Jellypowered/pi-llama-swap`
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -36,14 +34,12 @@ import { Compile } from "typebox/compile";
 
 // ---- Config ---------------------------------------------------------------
 
-/** Shape of the pi-llama.json configuration file. */
+/** Shape of the pi-llama-swap.json configuration file. */
 interface PiLlamaConfig {
-	/** Base URL of the llama-server / llama-swap API. */
+	/** Base URL of the llama-swap API. */
 	baseUrl?: string;
 	/** Provider ID used to register models. */
 	providerId?: string;
-	/** Use llama-swap upstream props endpoint (`/upstream/:id/props`). */
-	llamaSwapMode?: boolean;
 	/** Default context window when /v1/models does not report n_ctx. */
 	defaultContextWindow?: number;
 	/** Timeout in ms for props discovery requests. */
@@ -54,11 +50,10 @@ interface PiLlamaConfig {
 	logPropsDiscovery?: boolean;
 }
 
-/** Sensible defaults for the global pi-llama.json. */
+/** Sensible defaults for the global pi-llama-swap.json. */
 const DEFAULT_GLOBAL_CONFIG: PiLlamaConfig = {
 	baseUrl: "http://localhost:8080/v1",
-	providerId: "llama-cpp",
-	llamaSwapMode: false,
+	providerId: "llama-swap",
 	defaultContextWindow: 8192,
 	propsTimeoutMs: 120000,
 	apiKey: "no-key",
@@ -66,10 +61,10 @@ const DEFAULT_GLOBAL_CONFIG: PiLlamaConfig = {
 };
 
 /**
- * Create the global pi-llama.json with defaults if it does not already exist.
+ * Create the global pi-llama-swap.json with defaults if it does not already exist.
  */
 function ensureGlobalConfig(): void {
-	const globalPath = join(getAgentDir(), "pi-llama.json");
+	const globalPath = join(getAgentDir(), "pi-llama-swap.json");
 	if (existsSync(globalPath)) {
 		return;
 	}
@@ -79,21 +74,21 @@ function ensureGlobalConfig(): void {
 			mkdirSync(agentDir, { recursive: true });
 		}
 		writeFileSync(globalPath, JSON.stringify(DEFAULT_GLOBAL_CONFIG, null, 2) + "\n", "utf-8");
-		console.info(`[pi-llama] Created global config: ${globalPath}`);
+		console.info(`[pi-llama-swap] Created global config: ${globalPath}`);
 	} catch (err) {
-		console.warn(`[pi-llama] Failed to create global config: ${(err as Error).message}`);
+		console.warn(`[pi-llama-swap] Failed to create global config: ${(err as Error).message}`);
 	}
 }
 
 /**
- * Load merged config from global and project-local pi-llama.json files.
+ * Load merged config from global and project-local pi-llama-swap.json files.
  *
- * Project-local config (`./.pi/pi-llama.json`) takes precedence over the
- * global config (`~/.pi/agent/pi-llama.json`).
+ * Project-local config (`./.pi/pi-llama-swap.json`) takes precedence over the
+ * global config (`~/.pi/agent/pi-llama-swap.json`).
  */
 function loadConfig(cwd: string): PiLlamaConfig {
-	const globalPath = join(getAgentDir(), "pi-llama.json");
-	const projectPath = join(cwd, ".pi", "pi-llama.json");
+	const globalPath = join(getAgentDir(), "pi-llama-swap.json");
+	const projectPath = join(cwd, ".pi", "pi-llama-swap.json");
 
 	let globalConfig: PiLlamaConfig = {};
 	let projectConfig: PiLlamaConfig = {};
@@ -103,7 +98,7 @@ function loadConfig(cwd: string): PiLlamaConfig {
 		try {
 			globalConfig = JSON.parse(readFileSync(globalPath, "utf-8"));
 		} catch {
-			console.warn(`[pi-llama] Failed to parse global config: ${globalPath}`);
+			console.warn(`[pi-llama-swap] Failed to parse global config: ${globalPath}`);
 		}
 	}
 
@@ -112,7 +107,7 @@ function loadConfig(cwd: string): PiLlamaConfig {
 		try {
 			projectConfig = JSON.parse(readFileSync(projectPath, "utf-8"));
 		} catch {
-			console.warn(`[pi-llama] Failed to parse project config: ${projectPath}`);
+			console.warn(`[pi-llama-swap] Failed to parse project config: ${projectPath}`);
 		}
 	}
 
@@ -122,8 +117,6 @@ function loadConfig(cwd: string): PiLlamaConfig {
 
 // ---- Defaults (overridden by config) --------------------------------------
 
-const PROVIDER_ID = "llama-cpp";
-const DEFAULT_BASE_URL = "http://localhost:8080/v1";
 // Fallback for /v1/models entries missing meta.n_ctx.
 const DEFAULT_CONTEXT_WINDOW = 8192;
 const PROPS_TIMEOUT_MS = 120_000;
@@ -208,7 +201,7 @@ function applyTemplateThinkingSupport(model: MutableThinkingModel): void {
 export default async function (pi: ExtensionAPI) {
 	let currentModels: LlamaModel[] = [];
 
-	pi.registerCommand("llama-version", {
+	pi.registerCommand("llama-swap-version", {
 		description: "Print llama-server --version output",
 		handler: async (_args, ctx) => {
 			const result = await pi.exec("llama-server", ["--version"]);
@@ -231,12 +224,12 @@ export default async function (pi: ExtensionAPI) {
 	const resolvedBaseUrl =
 		process.env.LLAMA_BASE_URL ??
 		config.baseUrl ??
-		DEFAULT_BASE_URL;
-	const resolvedProviderId = config.providerId ?? PROVIDER_ID;
+		"http://localhost:8080/v1";
+	const resolvedProviderId = config.providerId ?? "llama-swap";
 	const resolvedApiKey = process.env.LLAMA_API_KEY ?? config.apiKey ?? "no-key";
 	const resolvedContextWindow = config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW;
 	const resolvedPropsTimeoutMs = config.propsTimeoutMs ?? PROPS_TIMEOUT_MS;
-	const llamaSwapMode = !!config.llamaSwapMode;
+
 	const logPropsDiscovery = !!config.logPropsDiscovery;
 
 	const baseUrl = resolvedBaseUrl.replace(/\/+$/, "");
@@ -245,7 +238,7 @@ export default async function (pi: ExtensionAPI) {
 		try {
 			const response = await fetch(`${baseUrl}/models`);
 			if (!response.ok) {
-				console.warn(`[llama-cpp] ${baseUrl}/models returned ${response.status}`);
+				console.warn(`[llama-swap] ${baseUrl}/models returned ${response.status}`);
 				return;
 			}
 
@@ -254,7 +247,7 @@ export default async function (pi: ExtensionAPI) {
 				const errors = [...validateModelsResponse.Errors(payload)]
 					.map((e) => `${"path" in e ? e.path : ""} ${e.message}`)
 					.join("; ");
-				console.warn(`[llama-cpp] invalid /models response: ${errors}`);
+				console.warn(`[llama-swap] invalid /models response: ${errors}`);
 				return;
 			}
 
@@ -290,19 +283,19 @@ export default async function (pi: ExtensionAPI) {
 			});
 
 			if (currentModels.length === 0) {
-				console.warn(`[llama-cpp] no models returned from ${baseUrl}/models`);
+				console.warn(`[llama-swap] no models returned from ${baseUrl}/models`);
 				return;
 			}
 
 			pi.registerProvider(resolvedProviderId, {
-				name: "llama.cpp",
+				name: "llama-swap",
 				baseUrl,
 				apiKey: resolvedApiKey,
 				api: "openai-completions",
 				models: currentModels,
 			});
 		} catch (error) {
-			console.warn(`[llama-cpp] failed to reach ${baseUrl}/models: ${(error as Error).message}`);
+			console.warn(`[llama-swap] failed to reach ${baseUrl}/models: ${(error as Error).message}`);
 		}
 	}
 
@@ -337,18 +330,15 @@ export default async function (pi: ExtensionAPI) {
 		pendingMetadata.add(modelId);
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
-		// llama-swap exposes model props at /upstream/:id/props;
-		// vanilla llama-server uses /props?model=:id&autoload=:bool
+		// llama-swap exposes model props at /upstream/:id/props
 		const propsBase = baseUrl.replace(/\/v1$/, "");
-		const propsUrl = llamaSwapMode
-			? `${propsBase}/upstream/${encodeURIComponent(modelId)}/props`
-			: `${propsBase}/props?model=${encodeURIComponent(modelId)}&autoload=${autoload}`;
+		const propsUrl = `${propsBase}/upstream/${encodeURIComponent(modelId)}/props`;
 
 		const startedAt = performance.now();
 
 		// Log that we're waiting so the user knows discovery is in progress.
 		if (logPropsDiscovery) {
-			ctx?.ui.notify(`[llama-cpp] fetching /props for ${modelId}…`, "info");
+			ctx?.ui.notify(`[llama-swap] fetching /props for ${modelId}…`, "info");
 		}
 
 		try {
@@ -358,7 +348,7 @@ export default async function (pi: ExtensionAPI) {
 
 			if (!response.ok) {
 				ctx?.ui.notify(
-					`[llama-cpp] /props for ${modelId} returned ${response.status} (${elapsed}ms to resolve /props)`,
+					`[llama-swap] /props for ${modelId} returned ${response.status} (${elapsed}ms to resolve /props)`,
 					"error",
 				);
 				return;
@@ -368,7 +358,7 @@ export default async function (pi: ExtensionAPI) {
 					.map((e) => `${"path" in e ? e.path : ""} ${e.message}`)
 					.join("; ");
 				ctx?.ui.notify(
-					`[llama-cpp] invalid /props response for ${modelId} (${elapsed}ms to resolve /props): ${errors}`,
+					`[llama-swap] invalid /props response for ${modelId} (${elapsed}ms to resolve /props): ${errors}`,
 					"error",
 				);
 				return;
@@ -379,7 +369,7 @@ export default async function (pi: ExtensionAPI) {
 				model.contextWindow = nCtx;
 				if (logPropsDiscovery) {
 					ctx?.ui.notify(
-						`[llama-cpp] contextWindow=${nCtx} for ${modelId} (${elapsed}ms to resolve /props)`,
+						`[llama-swap] contextWindow=${nCtx} for ${modelId} (${elapsed}ms to resolve /props)`,
 						"info",
 					);
 				}
@@ -399,14 +389,14 @@ export default async function (pi: ExtensionAPI) {
 			if (!updated) {
 				if (logPropsDiscovery) {
 					ctx?.ui.notify(
-						`[llama-cpp] no new metadata for ${modelId} (${elapsed}ms to resolve /props)`,
+						`[llama-swap] no new metadata for ${modelId} (${elapsed}ms to resolve /props)`,
 						"info",
 					);
 				}
 				return;
 			}
 			pi.registerProvider(resolvedProviderId, {
-				name: "llama.cpp",
+				name: "llama-swap",
 				baseUrl,
 				apiKey: resolvedApiKey,
 				api: "openai-completions",
@@ -417,7 +407,7 @@ export default async function (pi: ExtensionAPI) {
 			const err = error as Error;
 			const msg = err.name === "AbortError" ? "timeout" : err.message;
 			ctx?.ui.notify(
-				`[llama-cpp] /props for ${modelId} failed: ${msg} (${elapsed}ms to resolve /props)`,
+				`[llama-swap] /props for ${modelId} failed: ${msg} (${elapsed}ms to resolve /props)`,
 				"error",
 			);
 		} finally {

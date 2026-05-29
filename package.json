@@ -1,13 +1,13 @@
 {
-	"name": "pi-llama",
+	"name": "pi-llama-swap",
 	"version": "0.1.0",
-	"description": "llama.cpp Pi extension",
+	"description": "llama-swap Pi extension (inspired by huggingface/pi-llama)",
 	"type": "module",
 	"license": "MIT",
-	"keywords": ["pi-package", "pi-extension", "llama.cpp", "huggingface"],
+	"keywords": ["pi-package", "pi-extension", "llama-swap"],
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/huggingface/pi-llama.git"
+		"url": "https://github.com/Jellypowered/pi-llama-swap.git"
 	},
 	"pi": {
 		"extensions": ["./index.ts"]
