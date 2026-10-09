@@ -12,10 +12,27 @@
 	"pi": {
 		"extensions": ["./index.ts"]
 	},
+	"scripts": {
+		"test": "tsx --test index.test.ts",
+		"typecheck": "tsc --noEmit --skipLibCheck --allowImportingTsExtensions --module nodenext --moduleResolution nodenext --target es2022 index.ts index.test.ts",
+		"lint": "oxlint .",
+		"format:check": "oxfmt --check ."
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "^1.0.4",
+		"@earendil-works/pi-coding-agent": "^1.0.4",
+		"@types/node": "^22.19.19",
+		"oxfmt": "^0.36.0",
+		"oxlint": "^1.51.0",
+		"tsx": "^4.23.15",
+		"typescript": "^5.9.3"
+	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "*"
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
 	},
 	"peerDependenciesMeta": {
-		"@earendil-works/pi-coding-agent": { "optional": true }
+		"@earendil-works/pi-coding-agent": { "optional": true },
+		"typebox": { "optional": true }
 	}
 }

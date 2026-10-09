@@ -29,7 +29,7 @@ import { join } from "node:path";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { Compile } from "typebox/compile";
 
 // ---- Config ---------------------------------------------------------------
@@ -48,6 +48,22 @@ interface PiLlamaConfig {
 	apiKey?: string;
 	/** Log verbose /props discovery progress (start, elapsed time, errors). */
 	logPropsDiscovery?: boolean;
+	/** Per-model metadata and OpenAI compatibility overrides, keyed by model ID. */
+	modelOverrides?: Record<string, ModelMetadataOverride>;
+}
+
+/** Metadata that cannot always be discovered through llama-swap. */
+export interface ModelMetadataOverride {
+	/** Exact logical context window exposed by this backend. */
+	contextWindow?: number;
+	/** Whether the model supports controllable reasoning. */
+	reasoning?: boolean;
+	/** Map Pi thinking levels to backend-specific reasoning effort values. */
+	thinkingLevelMap?: LlamaModel["thinkingLevelMap"];
+	/** Pi OpenAI compatibility flags for this model/backend. */
+	compat?: LlamaModel["compat"];
+	/** Set false when this backend is known not to implement llama.cpp /props. */
+	propsDiscovery?: boolean;
 }
 
 /** Sensible defaults for the global pi-llama-swap.json. */
@@ -168,7 +184,8 @@ const PropsResponseSchema = Type.Object({
 
 const validatePropsResponse = Compile(PropsResponseSchema);
 
-type LlamaModel = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]["models"]>[number];
+type ProviderModel = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]["models"]>[number];
+type LlamaModel = Extract<ProviderModel, { reasoning: boolean; contextWindow: number }>;
 type ExtensionCtx = Parameters<Parameters<ExtensionAPI["on"]>[1]>[1];
 
 // llama.cpp template thinking is boolean, so expose Pi's default off/medium toggle only.
@@ -180,14 +197,15 @@ const TEMPLATE_THINKING_LEVEL_MAP = {
 } satisfies NonNullable<LlamaModel["thinkingLevelMap"]>;
 
 // Minimal shape needed to update both registered models and Pi's active model snapshot.
-type MutableThinkingModel = {
+type MutableModelMetadata = {
 	reasoning: boolean;
+	contextWindow: number;
 	thinkingLevelMap?: LlamaModel["thinkingLevelMap"];
 	compat?: LlamaModel["compat"];
 };
 
 // Mark a model as using llama.cpp's chat_template_kwargs.enable_thinking control.
-function applyTemplateThinkingSupport(model: MutableThinkingModel): void {
+function applyTemplateThinkingSupport(model: MutableModelMetadata): void {
 	model.reasoning = true;
 	model.thinkingLevelMap = TEMPLATE_THINKING_LEVEL_MAP;
 	model.compat = {
@@ -196,6 +214,117 @@ function applyTemplateThinkingSupport(model: MutableThinkingModel): void {
 		// chat_template_kwargs.enable_thinking payload, not a Qwen-only option.
 		thinkingFormat: "qwen-chat-template",
 	};
+}
+
+/** Apply explicit configuration last so discovery can never overwrite it. */
+export function applyModelOverride(
+	model: MutableModelMetadata,
+	override?: ModelMetadataOverride,
+): void {
+	if (!override) {
+		return;
+	}
+	if (
+		typeof override.contextWindow === "number" &&
+		Number.isFinite(override.contextWindow) &&
+		override.contextWindow > 0
+	) {
+		model.contextWindow = override.contextWindow;
+	}
+	if (typeof override.reasoning === "boolean") {
+		model.reasoning = override.reasoning;
+	}
+	if (override.thinkingLevelMap) {
+		model.thinkingLevelMap = { ...override.thinkingLevelMap };
+	}
+	if (override.compat) {
+		model.compat = { ...model.compat, ...override.compat };
+	}
+}
+
+/** Keep Pi's selected-model snapshot in sync after provider re-registration. */
+export function copyModelMetadata(
+	source: MutableModelMetadata,
+	target?: MutableModelMetadata,
+): void {
+	if (!target) {
+		return;
+	}
+	target.contextWindow = source.contextWindow;
+	target.reasoning = source.reasoning;
+	target.thinkingLevelMap = source.thinkingLevelMap;
+	target.compat = source.compat;
+}
+
+/** Merge llama.cpp metadata, then restore any explicit per-model settings. */
+export function applyPropsMetadata(
+	model: MutableModelMetadata,
+	data: Static<typeof PropsResponseSchema>,
+	override?: ModelMetadataOverride,
+): boolean {
+	let updated = false;
+	const nCtx = data.default_generation_settings?.n_ctx;
+	if (typeof nCtx === "number" && nCtx > 0) {
+		model.contextWindow = nCtx;
+		updated = true;
+	}
+	if (data.chat_template?.includes("enable_thinking") === true) {
+		applyTemplateThinkingSupport(model);
+		updated = true;
+	}
+	applyModelOverride(model, override);
+	return updated;
+}
+
+export type PropsFetchResult =
+	| { kind: "ok"; data: Static<typeof PropsResponseSchema> }
+	| { kind: "unsupported"; status: 404 | 405 }
+	| { kind: "http-error"; status: number; detail?: string }
+	| { kind: "invalid"; detail: string };
+
+/** Fetch optional llama.cpp metadata without attempting JSON parsing on HTTP errors. */
+export async function fetchPropsMetadata(
+	url: string,
+	timeoutMs: number,
+	fetchImpl: typeof fetch = fetch,
+): Promise<PropsFetchResult> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const response = await fetchImpl(url, { signal: controller.signal });
+		if (response.status === 404 || response.status === 405) {
+			return { kind: "unsupported", status: response.status };
+		}
+
+		const body = await response.text();
+		if (!response.ok) {
+			const detail = body.trim().slice(0, 300);
+			return {
+				kind: "http-error",
+				status: response.status,
+				...(detail ? { detail } : {}),
+			};
+		}
+		if (!body.trim()) {
+			return { kind: "invalid", detail: "empty response body" };
+		}
+
+		let data: unknown;
+		try {
+			data = JSON.parse(body);
+		} catch (error) {
+			return { kind: "invalid", detail: `malformed JSON: ${(error as Error).message}` };
+		}
+		if (!validatePropsResponse.Check(data)) {
+			const detail = [...validatePropsResponse.Errors(data)]
+				.map((error) => `${"path" in error ? error.path : ""} ${error.message}`)
+				.join("; ");
+			return { kind: "invalid", detail: detail || "unexpected JSON response" };
+		}
+		return { kind: "ok", data };
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -222,9 +351,7 @@ export default async function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
 
 	const resolvedBaseUrl =
-		process.env.LLAMA_BASE_URL ??
-		config.baseUrl ??
-		"http://localhost:8080/v1";
+		process.env.LLAMA_BASE_URL ?? config.baseUrl ?? "http://localhost:8080/v1";
 	const resolvedProviderId = config.providerId ?? "llama-swap";
 	const resolvedApiKey = process.env.LLAMA_API_KEY ?? config.apiKey ?? "no-key";
 	const resolvedContextWindow = config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW;
@@ -267,19 +394,21 @@ export default async function (pi: ExtensionAPI) {
 				if (isLoaded) {
 					suffixes.push("(loaded)");
 				}
-				return {
+				const discovered = {
 					id: model.id,
 					name: suffixes.length > 0 ? `${model.id} ${suffixes.join(" ")}` : model.id,
-					// /v1/models does not include /props-discovered capabilities, so preserve
-					// template thinking metadata across refreshes.
+					// Preserve metadata not present in /v1/models across provider refreshes.
 					reasoning: previous?.reasoning ?? false,
 					thinkingLevelMap: previous?.thinkingLevelMap,
 					input,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					contextWindow:
-						model.meta?.n_ctx ?? previous?.contextWindow ?? resolvedContextWindow,
+					contextWindow: discoveredMetadata.has(model.id)
+						? (previous?.contextWindow ?? model.meta?.n_ctx ?? resolvedContextWindow)
+						: (model.meta?.n_ctx ?? previous?.contextWindow ?? resolvedContextWindow),
 					compat: previous?.compat,
 				} as LlamaModel;
+				applyModelOverride(discovered, config.modelOverrides?.[model.id]);
+				return discovered;
 			});
 
 			if (currentModels.length === 0) {
@@ -300,27 +429,26 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 	const discoveredMetadata = new Set<string>();
+	const unsupportedProps = new Set<string>();
 	const pendingMetadata = new Set<string>();
 
 	async function discoverModelMetadata(
 		modelId: string,
 		ctx?: ExtensionCtx,
-		autoload = true,
 		timeoutMs = resolvedPropsTimeoutMs,
-		selectedModel?: MutableThinkingModel,
+		selectedModel?: MutableModelMetadata,
 	): Promise<void> {
 		const model = currentModels.find((m) => m.id === modelId);
 		if (!model) {
 			return;
 		}
-		if (discoveredMetadata.has(modelId)) {
-			// Provider re-registration does not update Pi's active model snapshot, so copy
-			// already-discovered thinking metadata into the selected model when available.
-			if (selectedModel && model.reasoning) {
-				selectedModel.reasoning = model.reasoning;
-				selectedModel.thinkingLevelMap = model.thinkingLevelMap;
-				selectedModel.compat = model.compat;
-			}
+		const override = config.modelOverrides?.[modelId];
+		applyModelOverride(model, override);
+		if (override?.propsDiscovery === false) {
+			unsupportedProps.add(modelId);
+		}
+		if (discoveredMetadata.has(modelId) || unsupportedProps.has(modelId)) {
+			copyModelMetadata(model, selectedModel);
 			return;
 		}
 		if (pendingMetadata.has(modelId)) {
@@ -328,63 +456,56 @@ export default async function (pi: ExtensionAPI) {
 		}
 
 		pendingMetadata.add(modelId);
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), timeoutMs);
-		// llama-swap exposes model props at /upstream/:id/props
+		// llama-swap exposes llama.cpp model props at /upstream/:id/props. Other
+		// upstreams may not implement this optional endpoint.
 		const propsBase = baseUrl.replace(/\/v1$/, "");
 		const propsUrl = `${propsBase}/upstream/${encodeURIComponent(modelId)}/props`;
-
 		const startedAt = performance.now();
 
-		// Log that we're waiting so the user knows discovery is in progress.
 		if (logPropsDiscovery) {
 			ctx?.ui.notify(`[llama-swap] fetching /props for ${modelId}…`, "info");
 		}
 
 		try {
-			const response = await fetch(propsUrl, { signal: controller.signal });
-			const data: unknown = await response.json();
+			const result = await fetchPropsMetadata(propsUrl, timeoutMs);
 			const elapsed = Math.round(performance.now() - startedAt);
 
-			if (!response.ok) {
-				ctx?.ui.notify(
-					`[llama-swap] /props for ${modelId} returned ${response.status} (${elapsed}ms to resolve /props)`,
-					"error",
-				);
-				return;
-			}
-			if (!validatePropsResponse.Check(data)) {
-				const errors = [...validatePropsResponse.Errors(data)]
-					.map((e) => `${"path" in e ? e.path : ""} ${e.message}`)
-					.join("; ");
-				ctx?.ui.notify(
-					`[llama-swap] invalid /props response for ${modelId} (${elapsed}ms to resolve /props): ${errors}`,
-					"error",
-				);
-				return;
-			}
-			const nCtx = data.default_generation_settings?.n_ctx;
-			let updated = false;
-			if (typeof nCtx === "number" && nCtx > 0) {
-				model.contextWindow = nCtx;
+			if (result.kind === "unsupported") {
+				unsupportedProps.add(modelId);
+				copyModelMetadata(model, selectedModel);
 				if (logPropsDiscovery) {
 					ctx?.ui.notify(
-						`[llama-swap] contextWindow=${nCtx} for ${modelId} (${elapsed}ms to resolve /props)`,
+						`[llama-swap] /props is unsupported for ${modelId} (HTTP ${result.status}, ${elapsed}ms)`,
 						"info",
 					);
 				}
-				updated = true;
+				return;
 			}
-			if (data.chat_template?.includes("enable_thinking") === true) {
-				applyTemplateThinkingSupport(model);
-				if (selectedModel) {
-					applyTemplateThinkingSupport(selectedModel);
-					if (pi.getThinkingLevel() === "off") {
-						pi.setThinkingLevel("medium");
-					}
-				}
-				updated = true;
+			if (result.kind === "http-error") {
+				const detail = result.detail ? `: ${result.detail}` : "";
+				ctx?.ui.notify(
+					`[llama-swap] /props for ${modelId} returned HTTP ${result.status}${detail} (${elapsed}ms to resolve /props)`,
+					"error",
+				);
+				return;
 			}
+			if (result.kind === "invalid") {
+				ctx?.ui.notify(
+					`[llama-swap] invalid /props response for ${modelId}: ${result.detail} (${elapsed}ms to resolve /props)`,
+					"error",
+				);
+				return;
+			}
+
+			const nCtx = result.data.default_generation_settings?.n_ctx;
+			const updated = applyPropsMetadata(model, result.data, override);
+			if (typeof nCtx === "number" && nCtx > 0 && logPropsDiscovery) {
+				ctx?.ui.notify(
+					`[llama-swap] contextWindow=${model.contextWindow} for ${modelId} (${elapsed}ms to resolve /props)`,
+					"info",
+				);
+			}
+			copyModelMetadata(model, selectedModel);
 			discoveredMetadata.add(modelId);
 			if (!updated) {
 				if (logPropsDiscovery) {
@@ -411,7 +532,6 @@ export default async function (pi: ExtensionAPI) {
 				"error",
 			);
 		} finally {
-			clearTimeout(timer);
 			pendingMetadata.delete(modelId);
 		}
 	}
@@ -424,9 +544,12 @@ export default async function (pi: ExtensionAPI) {
 	// Note: ctx.model may be undefined if the session started without a model selected,
 	// or if model resolution happens after session_start fires.
 	// In that case, the model_select event will handle it.
-	const sessionStartHandler = (_event: { type: "session_start"; reason: string; previousSessionFile?: string }, ctx: { model?: any }) => {
+	const sessionStartHandler = (
+		_event: { type: "session_start"; reason: string; previousSessionFile?: string },
+		ctx: ExtensionCtx,
+	) => {
 		if (ctx.model?.provider === resolvedProviderId) {
-			void discoverModelMetadata(ctx.model.id, ctx, true, resolvedPropsTimeoutMs, ctx.model);
+			void discoverModelMetadata(ctx.model.id, ctx, resolvedPropsTimeoutMs, ctx.model);
 		}
 	};
 	pi.on("session_start", sessionStartHandler);
@@ -443,7 +566,7 @@ export default async function (pi: ExtensionAPI) {
 		if (event.model.provider !== resolvedProviderId) {
 			return;
 		}
-		void discoverModelMetadata(event.model.id, ctx, true, resolvedPropsTimeoutMs, event.model);
+		void discoverModelMetadata(event.model.id, ctx, resolvedPropsTimeoutMs, event.model);
 	});
 
 	// Discover /props for already-active models because re-selecting them does not emit model_select.
@@ -451,8 +574,10 @@ export default async function (pi: ExtensionAPI) {
 		const modelId = (event.payload as { model?: unknown })?.model;
 		if (typeof modelId === "string") {
 			const activeModel =
-				ctx.model?.provider === resolvedProviderId && ctx.model.id === modelId ? ctx.model : undefined;
-			void discoverModelMetadata(modelId, ctx, true, resolvedPropsTimeoutMs, activeModel);
+				ctx.model?.provider === resolvedProviderId && ctx.model.id === modelId
+					? ctx.model
+					: undefined;
+			void discoverModelMetadata(modelId, ctx, resolvedPropsTimeoutMs, activeModel);
 		}
 	});
 }
