@@ -16,6 +16,7 @@
  *   "baseUrl": "http://localhost:8080/v1",
  *   "providerId": "llama-swap",
  *   "defaultContextWindow": 8192,
+ *   "defaultMaxTokens": 8192,
  *   "propsTimeoutMs": 120000,
  *   "apiKey": "no-key"
  * }
@@ -40,8 +41,10 @@ interface PiLlamaConfig {
 	baseUrl?: string;
 	/** Provider ID used to register models. */
 	providerId?: string;
-	/** Default context window when /v1/models does not report n_ctx. */
+	/** Default context window when /v1/models and /props do not report it. */
 	defaultContextWindow?: number;
+	/** Default maximum output tokens when no per-model override is configured. */
+	defaultMaxTokens?: number;
 	/** Timeout in ms for props discovery requests. */
 	propsTimeoutMs?: number;
 	/** API key passed to the provider (default: "no-key"). */
@@ -56,6 +59,8 @@ interface PiLlamaConfig {
 export interface ModelMetadataOverride {
 	/** Exact logical context window exposed by this backend. */
 	contextWindow?: number;
+	/** Maximum output tokens Pi may request from this model. */
+	maxTokens?: number;
 	/** Whether the model supports controllable reasoning. */
 	reasoning?: boolean;
 	/** Map Pi thinking levels to backend-specific reasoning effort values. */
@@ -71,6 +76,7 @@ const DEFAULT_GLOBAL_CONFIG: PiLlamaConfig = {
 	baseUrl: "http://localhost:8080/v1",
 	providerId: "llama-swap",
 	defaultContextWindow: 8192,
+	defaultMaxTokens: 8192,
 	propsTimeoutMs: 120000,
 	apiKey: "no-key",
 	logPropsDiscovery: false,
@@ -135,6 +141,7 @@ function loadConfig(cwd: string): PiLlamaConfig {
 
 // Fallback for /v1/models entries missing meta.n_ctx.
 const DEFAULT_CONTEXT_WINDOW = 8192;
+const DEFAULT_MAX_TOKENS = 8192;
 const PROPS_TIMEOUT_MS = 120_000;
 
 const ModelsResponseSchema = Type.Object({
@@ -200,6 +207,7 @@ const TEMPLATE_THINKING_LEVEL_MAP = {
 type MutableModelMetadata = {
 	reasoning: boolean;
 	contextWindow: number;
+	maxTokens: number;
 	thinkingLevelMap?: LlamaModel["thinkingLevelMap"];
 	compat?: LlamaModel["compat"];
 };
@@ -231,6 +239,13 @@ export function applyModelOverride(
 	) {
 		model.contextWindow = override.contextWindow;
 	}
+	if (
+		typeof override.maxTokens === "number" &&
+		Number.isFinite(override.maxTokens) &&
+		override.maxTokens > 0
+	) {
+		model.maxTokens = override.maxTokens;
+	}
 	if (typeof override.reasoning === "boolean") {
 		model.reasoning = override.reasoning;
 	}
@@ -251,6 +266,7 @@ export function copyModelMetadata(
 		return;
 	}
 	target.contextWindow = source.contextWindow;
+	target.maxTokens = source.maxTokens;
 	target.reasoning = source.reasoning;
 	target.thinkingLevelMap = source.thinkingLevelMap;
 	target.compat = source.compat;
@@ -355,6 +371,7 @@ export default async function (pi: ExtensionAPI) {
 	const resolvedProviderId = config.providerId ?? "llama-swap";
 	const resolvedApiKey = process.env.LLAMA_API_KEY ?? config.apiKey ?? "no-key";
 	const resolvedContextWindow = config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW;
+	const resolvedMaxTokens = config.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
 	const resolvedPropsTimeoutMs = config.propsTimeoutMs ?? PROPS_TIMEOUT_MS;
 
 	const logPropsDiscovery = !!config.logPropsDiscovery;
@@ -405,6 +422,7 @@ export default async function (pi: ExtensionAPI) {
 					contextWindow: discoveredMetadata.has(model.id)
 						? (previous?.contextWindow ?? model.meta?.n_ctx ?? resolvedContextWindow)
 						: (model.meta?.n_ctx ?? previous?.contextWindow ?? resolvedContextWindow),
+					maxTokens: previous?.maxTokens ?? resolvedMaxTokens,
 					compat: previous?.compat,
 				} as LlamaModel;
 				applyModelOverride(discovered, config.modelOverrides?.[model.id]);

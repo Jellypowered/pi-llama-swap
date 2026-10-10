@@ -17,6 +17,7 @@ import extension, {
 
 const ninferOverride: ModelMetadataOverride = {
 	contextWindow: 240_000,
+	maxTokens: 32_768,
 	reasoning: true,
 	thinkingLevelMap: {
 		off: "none",
@@ -30,6 +31,7 @@ const ninferOverride: ModelMetadataOverride = {
 	compat: {
 		thinkingFormat: "qwen",
 		supportsReasoningEffort: true,
+		maxTokensField: "max_tokens",
 	},
 	propsDiscovery: false,
 };
@@ -38,6 +40,7 @@ function metadata() {
 	return {
 		reasoning: false,
 		contextWindow: 8192,
+		maxTokens: 8192,
 		thinkingLevelMap: undefined,
 		compat: undefined,
 	};
@@ -138,6 +141,7 @@ test("per-model overrides win over defaults and discovered llama.cpp metadata", 
 	const model = metadata();
 	applyModelOverride(model, ninferOverride);
 	assert.equal(model.contextWindow, 240_000);
+	assert.equal(model.maxTokens, 32_768);
 	assert.equal(model.reasoning, true);
 	assert.equal(model.compat?.thinkingFormat, "qwen");
 
@@ -186,7 +190,7 @@ async function captureReasoningPayload(reasoning: "off" | "low" | "medium" | "xh
 		input: ["text" as const],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 240_000,
-		maxTokens: 4096,
+		maxTokens: 32_768,
 		compat: ninferOverride.compat,
 	};
 	const context = normalizeContext({
@@ -207,6 +211,8 @@ async function captureReasoningPayload(reasoning: "off" | "low" | "medium" | "xh
 		// Consume the stream so the request is issued.
 	}
 	assert.ok(payload);
+	assert.equal(payload.max_tokens, 32_768);
+	assert.equal(payload.max_completion_tokens, undefined);
 	return payload;
 }
 
@@ -286,6 +292,7 @@ test("mixed backends retain metadata across refresh and cache unsupported /props
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(ninferPropsCalls, 1, "an unsupported endpoint is queried only once per session");
 		assert.equal(ninferSelected.contextWindow, 240_000);
+		assert.equal(ninferSelected.maxTokens, 32_768);
 		assert.equal(ninferSelected.compat.thinkingFormat, "qwen");
 
 		const llamaSelected = {
@@ -300,7 +307,9 @@ test("mixed backends retain metadata across refresh and cache unsupported /props
 		await handlers.get("input")?.({ text: "/model" }, ctx);
 		models = registrations.at(-1).models;
 		assert.equal(models.find((model: any) => model.id === "ninfer-model").contextWindow, 240_000);
+		assert.equal(models.find((model: any) => model.id === "ninfer-model").maxTokens, 32_768);
 		assert.equal(models.find((model: any) => model.id === "llama-model").contextWindow, 65_536);
+		assert.equal(models.find((model: any) => model.id === "llama-model").maxTokens, 8192);
 	} finally {
 		globalThis.fetch = originalFetch;
 		if (originalAgentDir === undefined) {
